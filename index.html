@@ -1,0 +1,768 @@
+<!DOCTYPE html>
+<html>
+<head>
+	<script type="text/javascript" src="/javascript/jquery-1.8.0.min.js"></script>
+	<script type="text/javascript">
+		var createjs = window;
+	</script>
+	<script type="text/javascript" src="/javascript/CreateJS-TweenJS-0b9770d/lib/easeljs-0.5.0.min.js"></script>
+	<script type="text/javascript" src="/javascript/CreateJS-TweenJS-0b9770d/lib/tweenjs-0.3.0.min.js"></script>
+	<script src="/socket.io/socket.io.js"></script>
+	<script>
+	  	//the player's hand, contains objects with data and visual pointers
+	  	var hand = [];
+	  	
+	  	//the black card that's currently on the table
+	  	var judge_card;
+	  	
+	  	//array of player objects with relevant information stored
+	  	var players = [];
+	  	
+	  	//the array of cards currently in consideration for a multiple-card play (play-two or play-three)
+	  	var playedCards = [];
+	  	
+	  	//number of white cards the player can have at a time
+	  	var handSize;
+	  	
+	  	//the name of the player currently judging
+	  	var judge;
+	  	
+	  	//the player's name
+	  	var name;
+	  	
+	  	//whether the player has played cards for this round
+	  	var played = false;
+	  	
+	  	//whether the player has actually started playing the game
+	  	var started = false;
+	  	
+	  	//whether the round is in the playing or judging mode
+	  	var judging = false;
+	  	
+	  	var socket;
+	  
+	 	window.onload = init;
+		var canvas;
+		var stage;
+		var playerContainer;
+	
+		var formDOMElement;
+		
+		//screen dimensions
+		var W = 1000;
+		var H = 350;
+		
+		//card dimensions
+		var cardW = 178;
+		var cardH = 250;
+		
+		//overlap between cards in a row
+		var overlap = 30;
+		
+		var canvas_w;
+		var canvas_h;
+		var handContainer;
+		var nameContainer;
+	
+		var lineW = cardW - 45;
+		var lineH = 20;
+		var iconX = 24;
+		var iconY = 216;
+		var typeFont = "Helvetica, Arial";
+		
+		var score = 0;
+		
+		//draw a black card at x, y, with relevant data and in the passed container
+		function drawBlackCard(x, y, data, container) {
+			var bc = new createjs.Container();
+			bc.addChild(new createjs.Bitmap("/images/bc.png"));
+			var bcIcon = new createjs.Bitmap("/images/icon_b.png");
+			bcIcon.x = iconX;
+			bcIcon.y = iconY;
+			bc.addChild(bcIcon);
+			var bcText = new createjs.Text(data.text, "bold 14px " + typeFont, "#FFFFFF");
+			bcText.lineWidth = lineW;
+			bcText.lineHeight = lineH;
+			bcText.x = 24;
+			bcText.y = 30;
+			bc.addChild(bcText);
+			bc.x = x;//(canvas_w - cardW)/2;
+			bc.y = -300;
+			container.addChild(bc);
+			
+			//draw 2 or 3 image indicators
+			if(data.blanks == 2) {
+				var pick2Icon = new createjs.Bitmap("/images/p2.png");
+				bc.addChild(pick2Icon);
+				pick2Icon.x = 114;
+				pick2Icon.y = 216;
+				//pick2Icon.alpha = 0;
+			} else if (data.blanks == 3) {
+				var pick2Icon = new createjs.Bitmap("/images/p3.png");
+				bc.addChild(pick2Icon);
+				pick2Icon.x = 114;
+				pick2Icon.y = 216;
+				//pick2Icon.alpha = 0;
+			}
+			
+			//animate the card to slide onscreen
+			Tween.get(bc).to({y:y},800,Ease.quintOut);
+			
+			return bc;
+		}
+		
+		//draw a white card at x, y, with relevant data and in the passed container
+		function drawWhiteCard(x, y, data, container) {
+			var wc1 = new Container();
+			wc1.addChild(new Bitmap("/images/wc.png"));
+			var wc1Icon = new Bitmap("/images/icon_w.png");
+			wc1Icon.x = iconX;
+			wc1Icon.y = iconY;
+			wc1.addChild(wc1Icon);
+			var wc1Text = new Text(data.text, "bold 14px " + typeFont, "#000000");
+			wc1Text.lineWidth = lineW;
+			wc1Text.lineHeight = lineH;
+			wc1Text.x = 24;
+			wc1Text.y = 30;
+			wc1.addChild(wc1Text);
+			wc1.x = x;
+			wc1.y = -300;
+			//wc1.regX = cardW/2;
+			//wc1.regY = cardH/2;
+			wc1.rotation = Math.random()*6-3;
+			container.addChild(wc1);
+			Tween.get(wc1).to({y:y},800,Ease.quintOut);
+			
+			return wc1;
+		}
+		
+		//called after some white cards are played, pushes current cards together before new cards are dealt
+		function shiftCards() {
+			var gap = 0;
+			
+			//move cards left by the gap amount, add to the gap if cards are missing
+			for (var i = 0; i < hand.length; i++) {
+				if (!hand[i]) {
+					gap++;
+				} else if (gap > 0) {
+					Tween.get(hand[i].g).to({x: 50 + (i-gap)*(canvas_w - 100)/handSize},200,Ease.sineOut);
+					hand[i-gap] = hand[i];
+					hand[i] = null;
+				}
+			}
+			var i = 0;
+			//remove the card data as well to match the visualization
+			while (i < hand.length) {
+				if (!hand[i]) {
+					hand.splice(i,1);
+				} else {
+					i++;
+				}
+			}
+		}
+		
+		//add labels to names to indicate if they have played yet or are the judge
+		function labelNames() {
+			for (var i = 0; i < players.length; i++) {
+				if (players[i].name == judge && players[i].container.getNumChildren() == 1) {
+					var icon = new createjs.Bitmap("/images/crown.png");
+					icon.y = 2;
+					players[i].container.addChild(icon);
+				} else if (players[i].played && players[i].container.getNumChildren() == 1){
+					var icon = new createjs.Bitmap("/images/played.png");
+					icon.y = 3;
+					players[i].container.addChild(icon);
+				}
+			}
+			
+			nameContainer.getChildAt(0).text = name + ": " + score;
+			
+			//label the player too
+			if (name == judge && nameContainer.getNumChildren() == 1) {
+				var icon = new createjs.Bitmap("/images/crown.png");
+				icon.y = canvas_h - 32;
+				icon.x = 3;
+				nameContainer.addChild(icon);
+			} else if (played && nameContainer.getNumChildren() == 1) {
+				var icon = new createjs.Bitmap("/images/played.png");
+				icon.x = 3;
+				icon.y = canvas_h - 31;
+				nameContainer.addChild(icon);
+			}
+		}
+	
+		//remove player labels so they can be reassigned next round
+		function clearLabels() {
+			judge = "";
+			for (var i = 0; i < players.length; i++) {
+				if (players[i].container.getNumChildren() == 2) {
+					players[i].container.removeChildAt(1);
+				}
+				players[i].played = false;
+			}
+			if (nameContainer.getNumChildren() > 1) {
+				nameContainer.removeChildAt(1);
+			}
+		}
+	
+		//add a new player to the data array and onscreen as well
+		function addPlayer(name) {
+			var player = new Container();
+			player.y = -500;
+			var text = new createjs.Text(name, "bold 24px " + typeFont, "#FFFFFF");
+			text.x = 20;
+			player.addChild(text);
+			playerContainer.addChild(player);
+			Tween.get(player).to({y:players.length*35 + 5},500,Ease.sineOut);
+			players.push({name: name, container: player});
+		}
+		
+		//randomize an array, used to randomize the cards the judge sees
+		function fisherYates ( myArray ) {
+			var i = myArray.length, j, tempi, tempj;
+			if ( i == 0 ) return false;
+		  	while ( --i ) {
+				j = Math.floor( Math.random() * ( i + 1 ) );
+				tempi = myArray[i];
+			 	tempj = myArray[j];
+			 	myArray[i] = tempj;
+			 	myArray[j] = tempi;
+		   	}
+		}
+	
+		//display a message onscreen then animate it away automatically
+		function showMessage(message) {
+			var text = new Text(message, "bold 26px " + typeFont, "#FFFFFF");
+			text.x = canvas_w/2;
+			text.y = -50;
+			text.opacity = 0;
+			text.textAlign = "center";
+			stage.addChild(text);
+			Tween.get(text).to({y: 8},500,Ease.elasticOut).call(function() {
+				Tween.get(text).to({alpha: 0},2500,Ease.linear).call(function() {
+					stage.removeChild(text);
+				});
+			});
+		}
+		
+		//add the passed card data to the player's hand and the drawn board
+		function draw(data) {
+			var i = 0;
+			var j = 0;
+			var cardY = 50 + cardH + 50;
+			var card_bar_w = handSize*(cardW - overlap);
+			while(i < handSize && j < data.length) {
+				if (!hand[i]) {
+					hand[i] = {card: data[j]};
+					hand[i].g = drawWhiteCard((canvas_w - card_bar_w)/2 + (cardW - overlap)*i, cardY, data[j], handContainer);
+					hand[i].g.rotation = Math.random()*6 - 3;
+					(function(card, graphics, offset) {
+						setTimeout(function() {
+							//add behavior to these cards here, since other white cards do other things
+							graphics.onMouseOver = function() {
+								var selected = -1;
+								for (var k = 0; k < playedCards.length; k++) {
+									if (playedCards[k] == card) {
+										selected = k;
+									}
+								}
+								if (judge != name && !played && selected == -1) {
+									Tween.get(graphics).to({y: cardY - ((judge_card.card.blanks - playedCards.length) * 15)},200,Ease.sineOut);
+								}
+							}
+							graphics.onMouseOut = function() {
+								var selected = -1;
+								for (var k = 0; k < playedCards.length; k++) {
+									if (playedCards[k] == card) {
+										selected = k;
+									}
+								}
+								if (judge != name && !played && selected == -1) {
+									Tween.get(graphics).to({y: cardY},200,Ease.sineOut);
+								}
+							}
+							
+							graphics.onClick = function() {
+								if (judge != name && !played) {
+									//check if this card is selected already
+									var selected = -1;
+									for (var k = 0; k < playedCards.length; k++) {
+										if (playedCards[k] == card) {
+											selected = k;
+										}
+									}
+									
+									//remove this and subsequent cards from selection
+									if (selected != -1) {
+										for (var k = 0; k < hand.length; k++) {
+											if (playedCards.indexOf(hand[k].card) >= selected) {
+												Tween.get(hand[k].g).to({y: cardY},200,Ease.sineOut);
+											}
+										}
+										playedCards.splice(selected,playedCards.length);
+									//add this card to selection if not enough selected
+									} else if (playedCards.length + 1 < judge_card.card.blanks) {
+										playedCards.push(card);
+									//play them all if enough selected
+									} else {
+										playedCards.push(card);
+										socket.emit('play', {name: name, played: playedCards});
+										for (var k = 0; k < hand.length; k++) {
+											if (playedCards.indexOf(hand[k].card) != -1) {
+												(function(o,last) {
+													Tween.get(o.g).to({y: -300},200,Ease.sineIn).call(function() {
+														handContainer.removeChild(o.g);
+														if (o.c = last) {
+															shiftCards();
+															playedCards = [];
+															labelNames();
+														}
+														delete(o);
+													});
+												})(hand[k],card);
+												hand[k] = null;
+											}
+										}
+										played = true;
+									}
+								}
+							}
+						}, 300*offset);
+					})(data[j], hand[i].g, j);
+					j++;
+				}
+				i++;
+			}
+		}
+		
+		//start the game for the specific player
+		function roundStart(data) {
+			judging = false;
+			judge = data.judge;
+			if (judge == name) {
+				showMessage("You are the judge");
+				Tween.get(handContainer).to({y: 1000},500,Ease.sineIn);
+			} else {
+				showMessage(data.judge + " is the judge");
+				played = false;
+			}
+			judge_card = {card: data.card, g: drawBlackCard((canvas_w - cardW)/2, 50, data.card, stage)};
+			judge_card.g.rotation = Math.random()*6 - 3;
+			labelNames();
+		}
+		
+		//end the round, if the player isn't the judge that's it, if they are then hide the hand, 
+		//show the new cards, and make them choose a winner
+		function roundEnd(data) {
+			judging = true;
+			if (judge == name) {
+				//hide hand and show cards to choose from
+				//Tween.get(handContainer).to({y: 1000},500,Ease.sineIn);
+				
+				fisherYates(data.played);
+				
+				//make container specifically for the slection cards
+				var selectContainer = new Container();
+				stage.addChild(selectContainer);
+				selectContainer.y = 1000;
+				var offsetSize = 15;
+				var baseX = (canvas_w - data.played.length*(cardW + offsetSize*(judge_card.card.blanks)))/2;
+				var baseY = 50 + cardH + 50;
+				for (var i = 0; i < data.played.length; i++) {
+					if (data.played[i].length == 0) {
+						data.played.splice(i,1);
+					}
+				}
+				for (var i = data.played.length - 1; i >= 0; i--) {
+					var subBaseX = i*(cardW + offsetSize*(judge_card.card.blanks))
+					var stack = [];
+					for (var j = data.played[i].length - 1; j >= 0; j--) {
+						var offset = offsetSize*j;
+						var c = drawWhiteCard(baseX + subBaseX + offset, baseY - offset, data.played[i][j], selectContainer);
+						c.rotation = Math.random()*4 - 2;
+						stack.unshift(c);
+					}
+					(function(card, cardSet, x, y, ind) {
+						card.onMouseOver = function() {
+							for (var k = 0; k < cardSet.length; k++) {
+								Tween.get(cardSet[k]).to({y: y - offsetSize*(k + 1), x: x+(k*(cardW*4/5 + offsetSize*1.5))},200,Ease.sineOut);
+							}
+						}
+						card.onMouseOut = function() {
+							for (var k = 0; k < cardSet.length; k++) {
+								Tween.get(cardSet[k]).to({y: y - offsetSize*k, x: x+(k*offsetSize)},200,Ease.sineOut);
+							}
+						}
+						
+						card.onClick = function() {
+							Tween.get(selectContainer).to({y: 1000},500,Ease.sineIn).call(function() {
+								stage.removeChild(selectContainer);
+							});
+							Tween.get(handContainer).to({y: 0},500,Ease.sineIn);
+							console.log('judgement reached');
+							socket.emit('judge_end', data.played[ind]);
+							
+						}
+					})(stack[0], stack, baseX + subBaseX, baseY, i);
+				}
+				Tween.get(selectContainer).to({y: 0},500,Ease.sineIn);
+			}
+		}
+		
+		function tick ()
+		{
+			stage.update();
+		}
+
+		function end() {
+			socket.emit('end', {name: name});
+		}
+
+		//leave the game without breaking it
+		function quit() {
+			//can't quit if you are the judge
+			if (name == judge) {
+				alert("Aw c'mon, at least wait until you aren't the judge.");
+			//can't quit if judging is happening
+			} else if (judging) {
+				alert("Wait a sec, the judge is judging and you might win this round.");
+			} else if (confirm("You sure?")) {
+				socket.emit('quit', {name: name});
+				Tween.get(judge_card.g).to({y: -500},500,Ease.sineIn);
+				Tween.get(handContainer).to({y: 2000},500,Ease.sineIn);
+				Tween.get(playerContainer).to({x: -500},500,Ease.sineIn);
+				socket.disconnect();
+				
+				var text = new Text("Y'all come back now, y'hear?", "bold 26px " + typeFont, "#FFFFFF");
+				text.x = -50;
+				text.y = 50;
+				text.textAlign = "center";
+				stage.addChild(text);
+				Tween.get(text).to({x: canvas_w/2},500,Ease.elasticOut);
+			}
+		}
+
+		function init ()
+		{
+			//socket = io.connect('http://localhost:8080');
+			//socket = io.connect('192.168.1.7:8080');
+			socket = io.connect('67.183.141.131:8080');
+			
+			//start the cursor in the name entry spot
+			$("#name").focus();
+			
+			socket.on('handshake', function (data) {
+				console.log('handshake');
+				console.log(data);
+				handSize = data.handSize;
+			});
+			
+			socket.on('draw', function (data) {
+				console.log('draw');
+				console.log(data);
+				draw(data);
+				var cards = [];
+				for (var i = 0; i < hand.length; i++) {
+					cards.push(hand[i].card);
+				}
+				
+				//confirm the player's hand so the server knows what's up
+				socket.emit('confirm_draw', {name: name, cards: cards});
+			});
+			socket.on('start', function(data) {
+				console.log('start');
+				console.log(data);
+				
+				started = true;
+				
+				//add current players (but not yours) to the player list
+				var self = -1;
+				var judging = true;
+				var playedCards = [];
+				for (var i = 0; i < data.players.length; i++) {
+					if (data.players[i].name != name) {
+						//add new player
+						addPlayer(data.players[i].name);
+						//record if player played already
+						players[players.length - 1].played = (data.players[i].played.length > 0);
+						//record if judging happening or not
+						judging = judging && (data.players[i].played.length > 0);
+					} else {
+						self = i;
+						score = data.players[i].score;
+					}
+					
+					//add played cards in case player is judging
+					playedCards.push(data.players[i].played);
+					
+					//record judge name
+					if (data.judge == i) {
+						judge = data.players[i].name;
+					}
+				}
+				
+				//draw the player's cards onscreen
+				draw(data.players[self].hand);
+				
+				//create current judge card
+				judge_card = {card: data.card, g: drawBlackCard((canvas_w - cardW)/2, 50, data.card, stage)};
+				judge_card.g.rotation = Math.random()*6 - 3;
+				
+				//write who is judge/judging
+				if (judge == name && judging) {
+					showMessage("You are currently judging");
+					played = true;
+					roundEnd({played: playedCards});
+					Tween.get(handContainer).to({y: 1000},500,Ease.sineIn);
+				} else if (judge == name) {
+					showMessage("You are the judge");
+					played = true;
+					Tween.get(handContainer).to({y: 1000},500,Ease.sineIn);
+				} else if (judging) {
+					showMessage(judge + " is currently judging");
+					played = true;
+					roundEnd({played: playedCards});
+				} else {
+					showMessage(judge + " is the judge");
+					played = false;
+				}
+				
+				//show status of players
+				labelNames();
+			});
+			socket.on('joined', function (data) {
+				console.log('joined');
+				console.log(data);
+				if (!started) {
+					return;
+				}
+				addPlayer(data.name);
+				showMessage(data.name + " joined");
+			});
+			socket.on('round_start', function (data) {
+				console.log('round_start');
+				console.log(data);
+				if (started) {
+					roundStart(data);
+				}
+			});
+			socket.on('play', function (data) {
+				console.log('play');
+				console.log(data);
+				if (started) {
+					for (var i = 0; i < players.length; i++) {
+						if (players[i].name == data.name) {
+							players[i].played = true;
+						}
+					}
+					labelNames();
+				}
+			});
+			socket.on('round_end', function (data) {
+				console.log('round_end');
+				console.log(data);
+				if (started) {
+					roundEnd(data);
+				}
+			});
+			socket.on('judge_end', function (data) {
+				console.log('judge_end');
+				console.log(data);
+				if (!started) {
+					return;
+				}
+				//display who won
+				showMessage(data.winner + " was the winner");
+				
+				if (data.winner == name) {
+					score++;
+				}
+				
+				//show winning cards
+				var winnerCards = new Container();
+				stage.addChild(winnerCards);
+				if (name != judge) {	
+					for (var i = 0; i < data.winnerCards.length; i++) {
+						var c = drawWhiteCard((canvas_w - cardW)/2 + i*(cardW-5), 50, data.winnerCards[i], winnerCards);
+						c.rotation = Math.random()*6 - 3;
+					}
+					Tween.get(judge_card.g).to({x: (canvas_w - 3*cardW)/2 - 40},300,Ease.sineIn);
+				}
+				//wait for a sec to show message and winning cards
+				setTimeout(function() {
+					//clear labels
+					clearLabels();
+					//remove black card
+					Tween.get(winnerCards).to({y: -300},500,Ease.sineIn).call(function() {
+						stage.removeChild(winnerCards);
+					});
+					Tween.get(judge_card.g).to({y: -300},500,Ease.sineIn);
+					delete(judge_card);
+				}, 2500);
+				
+			});
+			socket.on('quit', function (data) {
+				console.log('quit');
+				console.log(data);
+				showMessage(data.name + " quit");
+				
+				var found = -1;
+				
+				//remove name from players list
+				for (var i = 0; i < players.length; i++) {
+					if (players[i].name == data.name) {
+						found = i;
+						(function(cont) {
+							Tween.get(cont).to({x:-500},500,Ease.sineOut).call(function() {
+								playerContainer.removeChild(cont);
+							});
+						})(players[i].container);
+					} else if (found >= 0) {
+						(function(cont, ind) {
+							Tween.get(players[i].container).to({y:ind*35 + 5},500,Ease.sineOut);
+						})(players[i].container, i-1);
+					}
+				}
+				
+				players.splice(found, 1);
+			});
+			socket.on('end', function (data) {
+				console.log('end');
+				console.log(data);
+				
+				played = true;
+				
+				//say game is over
+				var text = new Text("Game Over", "bold 26px " + typeFont, "#FFFFFF");
+				text.x = -50;
+				text.y = 50;
+				text.textAlign = "center";
+				stage.addChild(text);
+				Tween.get(text).to({x: canvas_w/2},500,Ease.elasticOut);
+				
+				//get scores, sort, and see if there were any ties
+				var scores = [];
+				for (var i = 0; i < data.players.length; i++) {
+					scores.push(data.players[i].score);
+				}
+				scores.push(data.game);
+				var max = Math.max.apply(null,scores);
+				
+				//display individual scores and build winner names array
+				for (var i = 0; i < data.players.length; i++) {
+					var text;
+					if (data.players[i].score == max) {
+						text = new Text(data.players[i].name + ": " + data.players[i].score, "bold 22px " + typeFont, "#FFD700");
+					} else {
+						text = new Text(data.players[i].name + ": " + data.players[i].score, "bold 22px " + typeFont, "#FFFFFF");
+					}
+					text.x = -50;
+					text.y = 100 + 30*i;
+					stage.addChild(text);
+					Tween.get(text).to({x: canvas_w/2 - 40},500,Ease.elasticOut);
+				}
+				var text;
+				if (data.game == max) {
+					text = new Text("The Game: " + data.game, "bold 22px " + typeFont, "#FFD700");
+				} else {
+					text = new Text("The Game: " + data.game, "bold 22px " + typeFont, "#FFFFFF");
+				}
+				text.x = -50;
+				text.y = 100 + 30*data.players.length;
+				stage.addChild(text);
+				Tween.get(text).to({x: canvas_w/2 - 40},500,Ease.elasticOut);
+				
+				Tween.get(judge_card.g).to({y: -500},500,Ease.sineIn);
+			});
+			
+			
+			canvas = document.getElementById('canvas');
+			canvas.width = 7*(cardW - overlap) + 100;
+			canvas.height = 150 + 2*cardH;
+			canvas_w = canvas.width;
+			canvas_h = canvas.height;
+			
+			stage = new Stage(canvas);
+			stage.enableMouseOver();
+			handContainer = new Container();
+			playerContainer = new Container();
+			stage.addChild(handContainer);
+			stage.addChild(playerContainer);
+			
+			var form = document.getElementById("name_form");
+			formDOMElement = new DOMElement(form);
+			formDOMElement.regX = form.offsetWidth*0.5;
+			formDOMElement.regY = form.offsetHeight*0.5;
+			formDOMElement.x = canvas_w/2;
+			formDOMElement.y = -200;
+			stage.addChild(formDOMElement);
+			$("#join").click(join);
+			
+			stage.update();
+			
+			Ticker.setFPS(31);
+			Ticker.addListener(this);
+			Tween.get(formDOMElement).to({y:canvas_h * 0.4},1000,Ease.sineOut);
+		}
+		
+		function join() {
+			if ($("#name").val() != "") {
+				Tween.get(formDOMElement).to({y:canvas_h * 1.2},500,Ease.sineOut).call(function() {
+					
+					//make nametag to go on bottom left
+					name = $("#name").val();
+					stage.removeChild(formDOMElement);
+					$("#name_form").remove();
+					nameContainer = new Container();
+					nameText = new createjs.Text(name, "bold 36px " + typeFont, "#FFFFFF");
+					nameText.x = 20;
+					nameText.y = canvas_h + 50;
+					nameContainer.addChild(nameText);
+					stage.addChild(nameContainer);
+					Tween.get(nameText).to({y:canvas_h - 40},500,Ease.sineOut);
+					
+					var leave = new createjs.Text("I'm out", "bold 25px " + typeFont, "#FFFFFF");
+					leave.textAlign = "end";
+					leave.x = canvas_w - 20;
+					leave.y = canvas_h + 50;
+					stage.addChild(leave);
+					Tween.get(leave).to({y:canvas_h - 30},500,Ease.sineOut);
+					leave.onClick = quit;
+					
+					//join/start the game and get some cards
+					socket.emit('join', {name: name});
+				});
+			}
+		}
+	</script>
+	<style>
+		body{
+			font-family: 'Helvetica Arial', sans-serif;
+			font-size: 14px;
+			font-weight: bold;
+			background: #000000 url('/images/background.jpg') center repeat-y;
+		}
+		#name_form {
+			background-color: white;
+			padding: 10px;
+			padding-top: 12px;
+			border-radius: 5px;
+			border-style: solid;
+			border-width: 2px;
+		}
+	</style>
+	<title>Cards Against Humanity Online</title>
+</head>
+
+	<body>
+		<div id="main">
+			<div id="name_form">
+				<label for="name">Who dat?</label>
+				<input type="text" id="name"/>
+				<button type="button" id="join">Deal Me</button>
+			</div>
+			<canvas id="canvas"></canvas>
+		</div>
+	</body>
+
+</html>

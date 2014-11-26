@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html>
+<head>
+	<script src="js/jquery.js"></script>
+	<script src="/socket.io/socket.io.js"></script>
+	<script src="js/game.js"></script>
+	<style>
+		
+	</style>
+	<title>Pictionary Online?</title>
+</head>
+
+	<body>
+		<div id="header">
+			<img id="title" href="" />
+			<span id="message"><span>
+		</div>
+		<canvas id="paper" width="500" height="500"></canvas>
+		<div id="right_side">
+			<div id="team_info">
+				<div id="team1">
+					<p class="team_title">Team 1</p>
+					<ul id="team1_list" class="team_list">
+					</ul>
+				</div>
+				<div id="team2">
+					<p class="team_title">Team 2</p>
+					<ul id="team2_list" class="team_list">
+					</ul>
+				</div>
+			</div>
+			<div id="drawer_controls">	
+				<button id="clear">Clear</button>
+				<button id="won_round">We Got It!</button>
+			</div>
+			<p>Drawing: <span id="word">?<span></p>
+			<div id="timer_window">
+				<p>Time Left: <span id="time_left"></span></p>
+			</div>
+			<div id="preround_window">
+				<button id="start_round">Start the Round</button>
+				<button id="new_word">Give me Another Word</button>
+			</div>
+		</div>
+	</body>
+
+</html>
